@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Canvas Shooter Game</title>
+<style>
+  body {
+    margin: 0; 
+    font-family: Consolas, monospace;
+    background: linear-gradient(to bottom, #87CEEB, #f1f1f1);
+    user-select: none;
+  }
+  canvas {
+    display: block;
+    margin: 10px auto;
+    border: 1px solid #d3d3d3;
+    background: linear-gradient(to bottom, #87CEEB, #f1f1f1);
+  }
+  .controls {
+    text-align: center;
+    margin-top: 10px;
+  }
+  .controls button {
+    padding: 12px 22px;
+    font-size: 18px;
+    margin: 5px;
+    cursor: pointer;
+    border-radius: 6px;
+    border: 2px solid #555;
+    background: white;
+    transition: background-color 0.3s ease;
+    user-select: none;
+  }
+  .controls button:hover {
+    background-color: #eee;
+  }
+  p.instructions {
+    text-align: center;
+    font-size: 16px;
+    color: #333;
+    margin-top: 6px;
+  }
+</style>
+</head>
+<body>
+
+<div class="controls" aria-label="Game controls">
+  <button id="btnUp" aria-label="Move up">▲ Up</button>
+  <button id="btnDown" aria-label="Move down">▼ Down</button>
+  <button id="btnShoot" aria-label="Shoot bullet">Shoot</button>
+</div>
+<p class="instructions">Use Up/Down arrow keys or buttons to move, Space or Shoot button to fire.</p>
+
+<script>
+// --- Game Setup ---
+let canvas, ctx;
+let myGamePiece, myObstacles = [], myClouds = [], myBullets = [], enemies = [];
+let myScore, myHighestScore = parseInt(localStorage.getItem('highestScore') || '0', 10);
+let myHighestScoreDisplay;
+let gameStarted = false;
+let gameOver = false;
+let frameCount = 0;
+let outAnimationFrame = 0;
+let outTriggered = false;
+
+const canvasWidth = 480;
+const canvasHeight = 270;
+
+// Sound effects
+const soundShoot = new Audio('https://freesound.org/data/previews/320/320181_5260874-lq.mp3');
+const soundHit = new Audio('https://freesound.org/data/previews/146/146730_2443704-lq.mp3');
+const soundGameOver = new Audio('https://freesound.org/data/previews/331/331912_3248244-lq.mp3');
+
+function init() {
+  canvas = document.createElement('canvas');
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
+  ctx = canvas.getContext('2d');
+  document.body.insertBefore(canvas, document.body.firstChild);
+
+  startMenu();
+
+  // Keyboard controls
+  window.addEventListener('keydown', keyDownHandler);
+  window.addEventListener('keyup', keyUpHandler);
+
+  // Buttons controls
+  const btnUp = document.getElementById('btnUp');
+  const btnDown = document.getElementById('btnDown');
+  const btnShoot = document.getElementById('btnShoot');
+
+  btnUp.addEventListener('mousedown', () => moveUp());
+  btnUp.addEventListener('mouseup', () => stopMove());
+  btnUp.addEventListener('touchstart', e => { e.preventDefault(); moveUp(); });
+  btnUp.addEventListener('touchend', e => { e.preventDefault(); stopMove(); });
+
+  btnDown.addEventListener('mousedown', () => moveDown());
+  btnDown.addEventListener('mouseup', () => stopMove());
+  btnDown.addEventListener('touchstart', e => { e.preventDefault(); moveDown(); });
+  btnDown.addEventListener('touchend', e => { e.preventDefault(); stopMove(); });
+
+  btnShoot.addEventListener('click', shoot);
+  btnShoot.addEventListener('touchstart', e => { e.preventDefault(); shoot(); });
+}
+
+function startMenu() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.font = "36px Consolas";
+  ctx.fillStyle = "black";
+  ctx.textAlign = "center";
+  ctx.fillText("Click or Tap to Start", canvas.width / 2, canvas.height / 2);
+
+  function startHandler() {
+    canvas.removeEventListener('click', startHandler);
+    canvas.removeEventListener('touchstart', startHandler);
+    startGame();
+  }
+  canvas.addEventListener('click', startHandler);
+  canvas.addEventListener('touchstart', startHandler);
+}
+
+function startGame() {
+  gameStarted = true;
+  gameOver = false;
+  outTriggered = false;
+  outAnimationFrame = 0;
+  frameCount = 0;
+
+  myGamePiece = new Component(30, 30, "red", 10, 120, "player");
+  myScore = new Component("30px", "Consolas", "black", 250, 40, "text");
+  myScore.value = 0;
+  myHighestScoreDisplay = new Component("20px", "Consolas", "black", 10, 40, "text");
+  myClouds = [];
+  myObstacles = [];
+  myBullets = [];
+  enemies = [];
+
+  // Create clouds
+  for (let i = 0; i < 5; i++) {
+    myClouds.push(new Component(100, 60, "rgba(255,255,255,0.8)", Math.random() * canvas.width, Math.random() * 100, "cloud"));
+  }
+
+  if (window.gameLoopInterval) clearInterval(window.gameLoopInterval);
+  window.gameLoopInterval = setInterval(updateGameArea, 20);
+}
+
+// Game Component Constructor
+function Component(width, height, color, x, y, type, health = 1) {
+  this.type = type;
+  this.width = width;
+  this.height = height;
+  this.speedX = 0;
+  this.speedY = 0;
+  this.x = x;
+  this.y = y;
+  this.health = health;
+  this.color = color;
+  this.text = "";
+
+  this.update = function () {
+    if (!ctx) return;
+    if (this.type === "text") {
+      ctx.font = this.width + " " + this.height;
+      ctx.fillStyle = this.color;
+      ctx.textAlign = "left";
+      ctx.fillText(this.text, this.x, this.y);
+    } else if (this.type === "cloud") {
+      ctx.fillStyle = this.color;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.width / 3, 0, Math.PI * 2);
+      ctx.arc(this.x + 30, this.y + 10, this.width / 3, 0, Math.PI * 2);
+      ctx.arc(this.x + 60, this.y - 10, this.width / 3, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = this.color;
+      ctx.fillRect(this.x, this.y, this.width, this.height);
+      if (this.type === "enemy") {
+        ctx.fillStyle = "black";
+        ctx.font = "12px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText("HP: " + this.health, this.x + this.width / 2, this.y - 6);
+      }
+    }
+  };
+
+  this.newPos = function () {
+    this.x += this.speedX;
+    this.y += this.speedY;
+    this.hitEdges();
+  };
+
+  this.hitEdges = function () {
+    if (this.y < 0) this.y = 0;
+    if (this.y + this.height > canvas.height) this.y = canvas.height - this.height;
+  };
+
+  this.crashWith = function (other) {
+    return !(
+      this.y + this.height < other.y ||
+      this.y > other.y + other.height ||
+      this.x + this.width < other.x ||
+      this.x > other.x + other.width
+    );
+  };
+}
+
+// Main game update loop
+function updateGameArea() {
+  frameCount++;
+
+  if (outTriggered) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.font = "60px Consolas";
+    ctx.fillStyle = `rgba(255, 0, 0, ${Math.min(1, outAnimationFrame / 30)})`;
+    ctx.textAlign = "center";
+    ctx.fillText("OUT!", canvas.width / 2, canvas.height / 2);
+    outAnimationFrame++;
+    if (outAnimationFrame === 30) soundGameOver.play();
+    if (outAnimationFrame > 90) {
+      gameOver = true;
+      clearInterval(window.gameLoopInterval);
+      drawGameOverScreen();
+    }
+    return;
+  }
+
+  // Check collisions
+  for (let obstacle of myObstacles) {
+    if (myGamePiece.crashWith(obstacle)) {
+      triggerOut();
+      return;
+    }
+  }
+  for (let enemy of enemies) {
+    if (myGamePiece.crashWith(enemy)) {
+      triggerOut();
+      return;
+    }
+  }
+
+  // Clear canvas
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Move and draw clouds
+  for (let cloud of myClouds) {
+    cloud.x -= 1;
+    if (cloud.x + cloud.width < 0) {
+      cloud.x = canvas.width + Math.random() * 100;
+      cloud.y = Math.random() * 100;
+    }
+    cloud.update();
+  }
+
+  // Add new obstacles every 90 frames
+  if (frameCount % 90 === 0) {
+    let height = Math.floor(Math.random() * 50) + 10;
+    let gap = 50;
+    let yPos = Math.random() * (canvas.height - height - gap);
+    myObstacles.push(new Component(10, height, "green", canvas.width, yPos, "obstacle"));
+    myObstacles.push(new Component(10, canvas.height - height - gap, "green", canvas.width, yPos + height + gap, "obstacle"));
+  }
+
+  // Add new enemies every 150 frames
+  if (frameCount % 150 === 0) {
+    let enemyY = Math.random() * (canvas.height - 30);
+    enemies.push(new Component(30, 30, "purple", canvas.width, enemyY, "enemy", 3));
+  }
+
+  // Update obstacles
+  for (let i = myObstacles.length - 1; i >= 0; i--) {
+    myObstacles[i].x -= 3;
+    if (myObstacles[i].x + myObstacles[i].width < 0) {
+      myObstacles.splice(i, 1);
+    } else {
+      myObstacles[i].update();
+    }
+  }
+
+  // Update enemies
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    enemies[i].x -= 4;
+    if (enemies[i].x + enemies[i].width < 0 || enemies[i].health <= 0) {
+      enemies.splice(i, 1);
+    } else {
+      enemies[i].update();
+    }
+  }
+
+  // Update bullets
+  for (let i = myBullets.length - 1; i >= 0; i--) {
+    myBullets[i].x += 8;
+    if (myBullets[i].x > canvas.width) {
+      myBullets.splice(i, 1);
+      continue;
+    }
+
+    // Check bullet collision with enemies
+    let bullet = myBullets[i];
+    let hitEnemyIndex = -1;
+    for (let j = 0; j < enemies.length; j++) {
+      if (bullet.crashWith(enemies[j])) {
+        hitEnemyIndex = j;
+        break;
+      }
+    }
+    if (hitEnemyIndex >= 0) {
+      enemies[hitEnemyIndex].health--;
+      myScore.value += 10;
+      myBullets.splice(i, 1);
+      soundHit.play();
+    } else {
+      myBullets[i].update();
+    }
+  }
+
+  // Update player position
+  myGamePiece.newPos();
+  myGamePiece.update();
+
+  // Update score display
+  myScore.text = "Score: " + myScore.value;
+  myScore.update();
+
+  myHighestScoreDisplay.text = "Highest Score: " + myHighestScore;
+  myHighestScoreDisplay.update();
+}
+
+// Trigger game over "OUT!" animation
+function triggerOut() {
+  if (!outTriggered) {
+    outTriggered = true;
+    soundGameOver.play();
+    if (myScore.value > myHighestScore) {
+      myHighestScore = myScore.value;
+      localStorage.setItem('highestScore', myHighestScore);
+    }
+  }
+}
+
+function drawGameOverScreen() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.font = "28px Consolas";
+  ctx.fillStyle = "black";
+  ctx.textAlign = "center";
+  ctx.fillText("GAME OVER", canvas.width / 2, canvas.height / 2 - 30);
+  ctx.fillText("Your Score: " + myScore.value, canvas.width / 2, canvas.height / 2);
+  ctx.fillText("Highest Score: " + myHighestScore, canvas.width / 2, canvas.height / 2 + 30);
+  ctx.font = "20px Consolas";
+  ctx.fillText("Click or Tap to Restart", canvas.width / 2, canvas.height / 2 + 70);
+
+  function restartHandler() {
+    canvas.removeEventListener('click', restartHandler);
+    canvas.removeEventListener('touchstart', restartHandler);
+    startGame();
+  }
+  canvas.addEventListener('click', restartHandler);
+  canvas.addEventListener('touchstart', restartHandler);
+}
+
+// Player movement flags
+let moveUpFlag = false;
+let moveDownFlag = false;
+
+// Handle keyboard
+function keyDownHandler(e) {
+  if (!gameStarted || gameOver) return;
+
+  switch (e.key) {
+    case "ArrowUp":
+      moveUpFlag = true;
+      myGamePiece.speedY = -4;
+      break;
+    case "ArrowDown":
+      moveDownFlag = true;
+      myGamePiece.speedY = 4;
+      break;
+    case " ":
+      shoot();
+      break;
+  }
+}
+
+function keyUpHandler(e) {
+  if (!gameStarted || gameOver) return;
+
+  switch (e.key) {
+    case "ArrowUp":
+      moveUpFlag = false;
+      if (moveDownFlag) myGamePiece.speedY = 4;
+      else myGamePiece.speedY = 0;
+      break;
+    case "ArrowDown":
+      moveDownFlag = false;
+      if (moveUpFlag) myGamePiece.speedY = -4;
+      else myGamePiece.speedY = 0;
+      break;
+  }
+}
+
+// Button controlled movement
+function moveUp() {
+  moveUpFlag = true;
+  moveDownFlag = false;
+  myGamePiece.speedY = -4;
+}
+function moveDown() {
+  moveDownFlag = true;
+  moveUpFlag = false;
+  myGamePiece.speedY = 4;
+}
+function stopMove() {
+  moveUpFlag = false;
+  moveDownFlag = false;
+  myGamePiece.speedY = 0;
+}
+
+// Shoot bullet
+function shoot() {
+  if (!gameStarted || gameOver) return;
+  const bulletX = myGamePiece.x + myGamePiece.width;
+  const bulletY = myGamePiece.y + myGamePiece.height / 2 - 3;
+  myBullets.push(new Component(10, 6, "black", bulletX, bulletY, "bullet"));
+  soundShoot.play();
+}
+
+// Start the game setup
+window.onload = init;
+</script>
+</body>
+</html>
